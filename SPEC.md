@@ -181,8 +181,10 @@ answered from it.
 **R4.** Issue concurrent writes. Read repeatedly throughout.
 *Pass:* every observed revision corresponds to a complete write.
 
-A survey applying the R1–R3 tests to nine open-source agent-memory systems on
-2026-09-29 found **none at level 1**. Two reached the underlying idea in part:
+A survey applying the R1–R3 tests to eight open-source agent-memory systems on
+2026-09-29 found **none at level 1**. Two further systems could not be scored at all
+because their serving code is not public — an absence of evidence, recorded as such
+rather than counted as a failure. Two reached the underlying idea in part:
 one keyed derived caches on a corpus counter that never left the process, and
 one implemented a signed append-only log that was never bound to its read path.
 

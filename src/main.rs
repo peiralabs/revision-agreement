@@ -9,7 +9,7 @@ use std::{fs, io::Read, path::PathBuf, process::ExitCode};
 #[command(
     version,
     about = "Test a JSON read response for SPEC.md R1 revision attribution",
-    long_about = "Tests R1 and revision advance only. R2 and R3 require system-specific write, agreement, and consumer operations and cannot be tested generically from a response body. A pass establishes level 1 only; it does not imply levels 2-4."
+    long_about = "Tests R1 and revision advance only. R2 and R3 require system-specific write, agreement, and consumer operations and cannot be tested generically from a response body. A pass establishes level 1 only; it does not imply levels 2-4.\n\nA pass means the response carries a revision-SHAPED field on its envelope. It cannot mean the value tracks the corpus: an API version or a schema version has the same shape as a corpus revision. Use `revcheck advance` around a write to confirm the value actually moves with the data. A failure is the stronger verdict - nothing revision-shaped is present at all."
 )]
 struct Cli {
     /// Emit a machine-readable verdict
@@ -102,6 +102,9 @@ fn run_check(report: &Report, machine: bool) -> u8 {
         println!("path: {}", qualifier.path);
         println!("shape: {}", qualifier.shape);
         println!("value: {}", qualifier.value);
+        println!(
+            "note: shape only. Confirm it tracks the corpus with `revcheck advance` around a write."
+        );
     } else {
         println!("level 0 (Unverified)");
         print_misses(&report.near_misses);

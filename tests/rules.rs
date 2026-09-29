@@ -178,3 +178,25 @@ fn split_http_only_claims_real_responses() {
     assert_eq!(found.len(), 1);
     assert_eq!(body, "{}");
 }
+
+/// Regression: an object keyed by id is still a collection. Removing the original
+/// `results`-as-object special case while making the walk recursive let a per-item
+/// revision in `{"results": {"id1": {...}}}` be read as envelope scope and wrongly
+/// satisfy R1 — a false positive, which is the tool certifying what it cannot see.
+#[test]
+fn object_keyed_collections_are_still_per_item() {
+    let value = json!({"results": {"id1": {"revision": "a".repeat(40)}}});
+    let report = analyze(&value);
+    assert!(
+        report.qualifiers.is_empty(),
+        "certified a per-item revision"
+    );
+
+    // The mirror risk: a wrapper object must NOT be mistaken for a collection.
+    let wrapped = json!({"data": {"revision": "a".repeat(40)}});
+    assert_eq!(
+        analyze(&wrapped).qualifiers.len(),
+        1,
+        "lost a real revision"
+    );
+}

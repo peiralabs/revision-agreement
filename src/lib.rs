@@ -26,6 +26,13 @@ const ALLOWED: &str = "revision rev commit commit_sha sha etag version corpus_ve
 const TIMES: &str =
     "timestamp time date datetime updated_at created_at modified_at last_modified mtime";
 
+/// Object-valued keys that denote a collection of results rather than part of the
+/// envelope. An array is self-evidently a collection; an object keyed by id is not, and
+/// without this list a per-item revision in `{"results": {"id1": {...}}}` would be read
+/// as envelope scope and wrongly satisfy R1. Deliberately excludes wrapper names such as
+/// `data`, where `{"data": {"revision": ...}}` is a legitimate envelope.
+const COLLECTIONS: &str = "results items memories documents hits matches records entries chunks";
+
 /// Maximum envelope depth walked. Guards against hostile or pathological nesting;
 /// no realistic response envelope is anywhere near this deep.
 const MAX_DEPTH: usize = 64;
@@ -55,10 +62,15 @@ fn walk(value: &Value, path: &str, per_item: bool, depth: usize, report: &mut Re
             for (key, child) in map {
                 let child_path = child_path(path, key);
                 inspect(key, child, &child_path, per_item, report);
+                let collection = child.is_array()
+                    || (child.is_object()
+                        && COLLECTIONS
+                            .split_ascii_whitespace()
+                            .any(|name| name == normalize(key)));
                 walk(
                     child,
                     &child_path,
-                    per_item || child.is_array(),
+                    per_item || collection,
                     depth + 1,
                     report,
                 );

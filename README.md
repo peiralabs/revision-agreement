@@ -37,6 +37,12 @@ Two rules do most of the work, and both come straight from the specification:
 - **Timestamps are not revisions.** [§2](SPEC.md#2-terminology) rules out wall-clock time,
   so an ISO-8601 value is rejected even under a name like `version`.
 
+**A pass is weaker than a failure.** `revcheck` sees shape, not meaning: an API version and
+a corpus revision are indistinguishable in a single payload. A failure is therefore the
+stronger verdict — nothing revision-shaped is present at all — while a pass should be
+confirmed with `revcheck advance` around a write, which shows whether the value actually
+moves with the data.
+
 **Can this ever test R2 and R3?** Not from outside, and [§9](SPEC.md#9-proposal-a-declared-surface-non-normative)
 explains why: an observer can neither enumerate a system's derived consumers nor induce
 disagreement between them. A black-box test can therefore falsify conformance but never
