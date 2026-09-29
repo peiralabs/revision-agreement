@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Both jobs only read the repository. Stating this explicitly rather than
+# inheriting the org default means the token stays read-only even if that
+# default is ever widened.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-targets
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Proves the static musl build and the scratch image actually work.
+      - run: docker build -t revcheck:ci .
+      - run: docker run --rm revcheck:ci --help
+      # Prove the image actually adjudicates, not merely that it starts.
+      - name: The image returns the documented verdicts
+        run: |
+          set -euo pipefail
+          echo '{"results":[],"revision":"'$(printf 'a%.0s' {1..40})'"}' \
+            | docker run --rm -i revcheck:ci
+          ! echo '{"results":[{"updated_at":"2026-01-01T00:00:00Z"}]}' \
+            | docker run --rm -i revcheck:ci
+

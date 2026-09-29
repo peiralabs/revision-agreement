@@ -10,7 +10,30 @@ out-of-date answer, and nothing in that answer says so.
 This repository specifies the property that makes that failure visible, and
 how to test for it.
 
-**[Read the specification →](SPEC.md)**
+**[Read the specification →](SPEC.md)**  ·  **[Run the checker →](REVCHECK.md)**
+
+```console
+$ curl -s https://example.test/search?q=x | revcheck
+level 0 (Unverified)
+near-misses:
+- $.results[0].updated_at: rejected by name (wall-clock field)
+- $.results[0].hash: per-item scope
+```
+
+`revcheck` reads a response body and decides whether it satisfies **R1**. It is
+deliberately narrow: it tests R1 and revision advance, and **not** R2 or R3, which need
+the system's own write and consumer operations and cannot be judged from a payload.
+
+Two rules do most of the work, and both come straight from the specification:
+
+- **Envelope, not item.** A revision on each result identifies that result, not the state
+  of the store, so it cannot satisfy R1. A per-item content hash is reported as a
+  near-miss rather than a pass.
+- **Timestamps are not revisions.** [§2](SPEC.md#2-terminology) rules out wall-clock time,
+  so an ISO-8601 value is rejected even under a name like `version`.
+
+When nothing qualifies it prints the near-misses and why each was rejected, because
+"no" is only useful if you can see what it nearly matched.
 
 ---
 

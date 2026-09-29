@@ -1,0 +1,12 @@
+[package]
+name = "revcheck"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+readme = "REVCHECK.md"
+description = "Reference checker for the Revision Agreement specification's R1 test"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+
