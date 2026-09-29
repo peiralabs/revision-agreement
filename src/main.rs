@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use clap::{Parser, Subcommand};
-use revcheck::{analyze, NearMiss};
+use revcheck::{analyze, analyze_headers, merge, split_http, NearMiss, Report};
 use serde_json::{json, Value};
 use std::{fs, io::Read, path::PathBuf, process::ExitCode};
 
@@ -31,7 +31,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Some(Command::Advance { a, b }) => run_advance(a, b, cli.json),
-        None => read(cli.file.as_deref()).map(|value| run_check(&value, cli.json)),
+        None => read(cli.file.as_deref()).map(|report| run_check(&report, cli.json)),
     };
     match result {
         Ok(code) => ExitCode::from(code),
@@ -42,7 +42,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn read(path: Option<&std::path::Path>) -> Result<Value, String> {
+fn read(path: Option<&std::path::Path>) -> Result<Report, String> {
     let mut input = String::new();
     if path.is_none() || path.is_some_and(|path| path == std::path::Path::new("-")) {
         std::io::stdin()
@@ -52,11 +52,36 @@ fn read(path: Option<&std::path::Path>) -> Result<Value, String> {
         input = fs::read_to_string(path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     }
-    serde_json::from_str(&input).map_err(|error| format!("invalid JSON: {error}"))
+    report_for(&input)
 }
 
-fn run_check(value: &Value, machine: bool) -> u8 {
-    let report = analyze(value);
+/// A raw HTTP response (`curl -D -`) is adjudicated on its headers as well as its body,
+/// because the most widely deployed revision identifier of all is an `ETag`. A response
+/// whose body is not JSON is still judged on its headers rather than refused outright.
+fn report_for(input: &str) -> Result<Report, String> {
+    let Some((headers, body)) = split_http(input) else {
+        let value: Value =
+            serde_json::from_str(input).map_err(|error| format!("invalid JSON: {error}"))?;
+        return Ok(analyze(&value));
+    };
+    let header_report = analyze_headers(&headers);
+    if body.trim().is_empty() {
+        return Ok(header_report);
+    }
+    match serde_json::from_str::<Value>(body) {
+        Ok(value) => Ok(merge(header_report, analyze(&value))),
+        Err(error) => {
+            let mut body_report = Report::default();
+            body_report.near_misses.push(NearMiss {
+                path: "$".into(),
+                reason: format!("body is not JSON ({error}); judged on headers alone"),
+            });
+            Ok(merge(header_report, body_report))
+        }
+    }
+}
+
+fn run_check(report: &Report, machine: bool) -> u8 {
     let qualifier = report.qualifiers.first();
     if machine {
         let near_misses: Vec<_> = report.near_misses.iter().map(near_json).collect();
@@ -85,8 +110,8 @@ fn run_check(value: &Value, machine: bool) -> u8 {
 }
 
 fn run_advance(a: PathBuf, b: PathBuf, machine: bool) -> Result<u8, String> {
-    let a_report = analyze(&read(Some(&a))?);
-    let b_report = analyze(&read(Some(&b))?);
+    let a_report = read(Some(&a))?;
+    let b_report = read(Some(&b))?;
     if a_report.qualifiers.is_empty() || b_report.qualifiers.is_empty() {
         if machine {
             println!(
@@ -114,7 +139,7 @@ fn run_advance(a: PathBuf, b: PathBuf, machine: bool) -> Result<u8, String> {
             .map(|right| (left, right))
     });
     let Some((left, right)) = pair else {
-        let message = "payloads satisfy R1 but have no qualifying revision at the same JSON path";
+        let message = "payloads satisfy R1 but have no qualifying revision at the same path";
         if machine {
             println!("{}", json!({"satisfied": false, "error": message}));
         } else {

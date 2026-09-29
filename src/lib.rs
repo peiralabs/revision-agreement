@@ -93,37 +93,35 @@ fn inspect(key: &str, value: &Value, path: &str, per_item: bool, report: &mut Re
     if !allowed {
         return;
     }
-    let shape = match value {
-        Value::String(text) if text.is_empty() => return wrong_type(report, path, "empty string"),
-        Value::String(text) if is_iso8601(text) => {
-            report.near_misses.push(NearMiss {
-                path: path.into(),
-                reason: "ISO-8601 date/time value".into(),
-            });
-            return;
-        }
-        Value::String(text) if is_hex(text, 40) => "hex40",
-        Value::String(text) if is_hex(text, 64) => "hex64",
-        Value::String(_) => "opaque",
-        Value::Number(number) if number.is_i64() || number.is_u64() => "integer",
-        Value::Null => return wrong_type(report, path, "null"),
-        Value::Bool(_) => return wrong_type(report, path, "boolean"),
-        Value::Number(_) => return wrong_type(report, path, "float"),
-        Value::Array(_) => return wrong_type(report, path, "array"),
-        Value::Object(_) => return wrong_type(report, path, "object"),
-    };
-    report.qualifiers.push(Qualifier {
-        path: path.into(),
-        value: value.clone(),
-        shape,
-    });
+    match classify(value) {
+        Ok(shape) => report.qualifiers.push(Qualifier {
+            path: path.into(),
+            value: value.clone(),
+            shape,
+        }),
+        Err(reason) => report.near_misses.push(NearMiss {
+            path: path.into(),
+            reason,
+        }),
+    }
 }
 
-fn wrong_type(report: &mut Report, path: &str, kind: &str) {
-    report.near_misses.push(NearMiss {
-        path: path.into(),
-        reason: format!("wrong type: {kind}"),
-    });
+/// The value half of R1, shared by the JSON and header paths. A revision must name one
+/// immutable state, so wall-clock values are refused here as well as by name.
+fn classify(value: &Value) -> Result<&'static str, String> {
+    match value {
+        Value::String(text) if text.is_empty() => Err("wrong type: empty string".into()),
+        Value::String(text) if is_iso8601(text) => Err("ISO-8601 date/time value".into()),
+        Value::String(text) if is_hex(text, 40) => Ok("hex40"),
+        Value::String(text) if is_hex(text, 64) => Ok("hex64"),
+        Value::String(_) => Ok("opaque"),
+        Value::Number(number) if number.is_i64() || number.is_u64() => Ok("integer"),
+        Value::Null => Err("wrong type: null".into()),
+        Value::Bool(_) => Err("wrong type: boolean".into()),
+        Value::Number(_) => Err("wrong type: float".into()),
+        Value::Array(_) => Err("wrong type: array".into()),
+        Value::Object(_) => Err("wrong type: object".into()),
+    }
 }
 
 fn child_path(parent: &str, key: &str) -> String {
@@ -242,4 +240,91 @@ fn valid_clock(value: &str, zone: bool) -> bool {
     }
     let part = |at| digits[at..at + 2].parse::<u8>().unwrap_or(255);
     part(0) <= 23 && part(2) <= 59 && (digits.len() == 4 || part(4) <= 60)
+}
+
+/// Splits a raw HTTP response (as `curl -D -` emits) into its headers and its body.
+/// Returns `None` when the input carries no status line, in which case the whole input
+/// is a body and nothing here applies.
+pub fn split_http(input: &str) -> Option<(Vec<(String, String)>, &str)> {
+    if !input.starts_with("HTTP/") {
+        return None;
+    }
+    let (head, body) = match (input.find("\r\n\r\n"), input.find("\n\n")) {
+        (Some(at), _) => (&input[..at], &input[at + 4..]),
+        (None, Some(at)) => (&input[..at], &input[at + 2..]),
+        (None, None) => (input, ""),
+    };
+    let headers = head
+        .lines()
+        .skip(1) // the status line
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
+        .collect();
+    Some((headers, body))
+}
+
+/// Applies R1 to response headers. Headers are envelope scope by construction: there is
+/// no per-item header, so the scope rule cannot be violated here.
+pub fn analyze_headers(headers: &[(String, String)]) -> Report {
+    let mut report = Report::default();
+    for (name, raw) in headers {
+        let path = format!("header:{name}");
+        // HTTP field names are case-insensitive and hyphenated, never camelCase:
+        // `normalize` would split `ETag` into `e_tag` and miss the single most widely
+        // deployed revision identifier there is.
+        let normalized = name.to_ascii_lowercase().replace('-', "_");
+        // `X-Commit` and `X-Revision` are the conventional vendor spellings.
+        let token = normalized.strip_prefix("x_").unwrap_or(&normalized);
+        if TIMES.split_ascii_whitespace().any(|item| item == token) {
+            report.near_misses.push(NearMiss {
+                path,
+                reason: "rejected by name (wall-clock field)".into(),
+            });
+            continue;
+        }
+        if !ALLOWED.split_ascii_whitespace().any(|item| item == token) {
+            continue;
+        }
+        // RFC 9110: a weak validator marks semantic equivalence, not one immutable
+        // state, so it cannot satisfy R1 even though it is a perfectly good cache
+        // validator.
+        let (value, weak) = match raw.strip_prefix("W/").or_else(|| raw.strip_prefix("w/")) {
+            Some(rest) => (rest, true),
+            None => (raw.as_str(), false),
+        };
+        let value = value.trim_matches('"');
+        if weak {
+            report.near_misses.push(NearMiss {
+                path,
+                reason: "weak validator (RFC 9110 W/): names semantic equivalence, not one immutable state".into(),
+            });
+            continue;
+        }
+        match classify(&Value::String(value.to_owned())) {
+            Ok(shape) => report.qualifiers.push(Qualifier {
+                path,
+                value: Value::String(value.to_owned()),
+                shape,
+            }),
+            Err(reason) => report.near_misses.push(NearMiss { path, reason }),
+        }
+    }
+    report
+}
+
+/// Merges a header report into a body report, headers first: a transport-level revision
+/// is the more authoritative of the two when both are present.
+pub fn merge(headers: Report, body: Report) -> Report {
+    Report {
+        qualifiers: headers
+            .qualifiers
+            .into_iter()
+            .chain(body.qualifiers)
+            .collect(),
+        near_misses: headers
+            .near_misses
+            .into_iter()
+            .chain(body.near_misses)
+            .collect(),
+    }
 }

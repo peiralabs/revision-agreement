@@ -118,3 +118,63 @@ fn pathological_nesting_is_refused_at_parse_time() {
         "serde_json should refuse recursion this deep rather than overflow"
     );
 }
+
+use revcheck::{analyze_headers, split_http};
+
+fn headers(raw: &[(&str, &str)]) -> Vec<(String, String)> {
+    raw.iter()
+        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+        .collect()
+}
+
+/// Regression: `normalize` splits camelCase, so it turned `ETag` into `e_tag` and missed
+/// the most widely deployed revision identifier in existence. HTTP field names are
+/// case-insensitive and hyphenated, never camelCase, and need their own normalisation.
+#[test]
+fn etag_qualifies_in_every_spelling() {
+    for spelling in ["ETag", "etag", "Etag", "ETAG"] {
+        let report = analyze_headers(&headers(&[(spelling, &format!("\"{}\"", "a".repeat(40)))]));
+        assert_eq!(report.qualifiers.len(), 1, "missed {spelling}");
+        assert_eq!(report.qualifiers[0].shape, "hex40");
+    }
+}
+
+/// RFC 9110: a weak validator asserts semantic equivalence, not one immutable state, so
+/// it is a perfectly good cache validator and still cannot satisfy R1.
+#[test]
+fn weak_etag_is_a_near_miss_not_a_pass() {
+    let report = analyze_headers(&headers(&[("ETag", "W/\"abc123\"")]));
+    assert!(report.qualifiers.is_empty());
+    assert!(report.near_misses[0].reason.contains("weak validator"));
+}
+
+#[test]
+fn header_names_follow_the_same_name_rules() {
+    // Wall-clock headers are refused by name, exactly as in a body.
+    let report = analyze_headers(&headers(&[(
+        "Last-Modified",
+        "Tue, 29 Sep 2026 17:00:00 GMT",
+    )]));
+    assert!(report.qualifiers.is_empty());
+    assert!(report.near_misses[0].reason.contains("wall-clock"));
+
+    // The conventional vendor prefix is stripped before matching.
+    let report = analyze_headers(&headers(&[("X-Revision", "4711")]));
+    assert_eq!(report.qualifiers.len(), 1);
+
+    // An unrelated header is simply ignored, not reported as a near-miss.
+    let report = analyze_headers(&headers(&[("Content-Type", "application/json")]));
+    assert!(report.qualifiers.is_empty() && report.near_misses.is_empty());
+}
+
+#[test]
+fn split_http_only_claims_real_responses() {
+    assert!(split_http("{\"results\":[]}").is_none());
+    let (found, body) = split_http("HTTP/2 200\r\nETag: \"x\"\r\n\r\n{\"a\":1}").unwrap();
+    assert_eq!(found, headers(&[("ETag", "\"x\"")]));
+    assert_eq!(body, "{\"a\":1}");
+    // Bare LF separators, as some tools emit.
+    let (found, body) = split_http("HTTP/1.1 200 OK\nETag: \"x\"\n\n{}").unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(body, "{}");
+}

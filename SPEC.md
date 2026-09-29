@@ -228,6 +228,98 @@ assumed.
 
 ---
 
-## 9. Licence
+## 9. Proposal: a declared surface (non-normative)
+
+Requirements R1–R4 describe behaviour. **R1 is observable from outside**, because its
+evidence rides along with the answer. **R2 and R3 are not**, and no amount of tooling
+fixes that:
+
+- An observer cannot **enumerate** a system's derived consumers. A search index, a
+  projection, a replica, a warm cache in a peer process — none of them is discoverable
+  from a response.
+- An observer cannot **induce** disagreement. Holding a consumer behind requires the
+  system's own controls.
+
+This produces an asymmetry worth stating plainly: **a black-box test can falsify
+conformance but cannot confirm it.** Finding an unlabelled stale answer proves a
+violation. Failing to find one proves nothing.
+
+The section below proposes an **optional** surface that makes R2 and R3 inspectable,
+on the model of `robots.txt`, `security.txt` and `/.well-known/`. It is not required for
+conformance. It exists so that conformance can be *checked* by someone who did not write
+the system.
+
+### 9.1 The revision travels with the answer
+
+Required already by [R1](#r1--a-read-reports-its-revision). Over HTTP, an `ETag` is the
+idiomatic carrier and needs no new field. Note that a **weak** validator (`W/"…"`, RFC
+9110) asserts semantic equivalence rather than one immutable state, and therefore does
+not satisfy R1.
+
+### 9.2 An agreement endpoint
+
+A system MAY expose its consumer set and their revisions at a well-known location:
+
+```
+GET /.well-known/revision-agreement
+```
+```json
+{
+  "source": "9f1c2e4a…",
+  "agree": false,
+  "consumers": [
+    { "name": "search-index", "revision": "9f1c2e4a…", "agrees": true },
+    { "name": "projection",   "revision": "3b77aa10…", "agrees": false }
+  ]
+}
+```
+
+With this, [R2](#r2--derived-consumers-agree-with-the-source) becomes a single request
+that anyone can make, and the answer names the laggard. Without it, R2 can only be tested
+by someone who already knows what the consumers are.
+
+### 9.3 A degradation label
+
+When a system serves a read despite a known disagreement — branch (b) of
+[R3](#r3--disagreement-fails-closed) — the label MUST be machine-readable. In a JSON
+envelope:
+
+```json
+{ "results": [], "revision": "3b77aa10…",
+  "stale": { "consumer": "search-index", "served": "3b77aa10…", "source": "9f1c2e4a…" } }
+```
+
+or as a response header:
+
+```
+Revision-Agreement: stale; consumer=search-index; served=3b77aa10; source=9f1c2e4a
+```
+
+A prose warning in a message string does not qualify. The caller acting on the answer is
+usually a program.
+
+### 9.4 What this still does not solve
+
+Confirming R3 requires inducing disagreement, which remains system-specific. Standardising
+a fault-injection hook is deliberately **not** proposed here: an endpoint whose purpose is
+to make a system serve stale data is an attack surface, and the cure would be worse than
+the disease.
+
+One generic technique falsifies R3 without any hook. Write, note the resulting revision,
+then read repeatedly. **Any read carrying a pre-write revision and no degradation label is
+a violation**, caught with no privileged access at all. The race window may be narrower
+than the sampling rate, so this finds real violations and certifies nothing — which is the
+asymmetry above, restated.
+
+### 9.5 Status
+
+Non-normative and unimplemented. It is recorded here because "how would anyone check
+this?" is a fair question to ask of any specification, and because the answer shapes the
+requirements. Counter-proposals are more useful than agreement.
+
+---
+
+## 10. Licence
 
 This specification is released under CC BY 4.0. Implementations are unencumbered.
+

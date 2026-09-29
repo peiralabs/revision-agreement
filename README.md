@@ -13,12 +13,17 @@ how to test for it.
 **[Read the specification →](SPEC.md)**  ·  **[Run the checker →](REVCHECK.md)**
 
 ```console
-$ curl -s https://example.test/search?q=x | revcheck
+$ curl -sD - https://example.test/search?q=x | revcheck
 level 0 (Unverified)
 near-misses:
+- header:Last-Modified: rejected by name (wall-clock field)
 - $.results[0].updated_at: rejected by name (wall-clock field)
 - $.results[0].hash: per-item scope
 ```
+
+Pass `curl -D -` and it reads the response headers too, because the most widely deployed
+revision identifier in existence is an `ETag`. A **weak** validator (`W/"…"`) is reported
+as a near-miss: RFC 9110 says it asserts semantic equivalence, not one immutable state.
 
 `revcheck` reads a response body and decides whether it satisfies **R1**. It is
 deliberately narrow: it tests R1 and revision advance, and **not** R2 or R3, which need
@@ -31,6 +36,12 @@ Two rules do most of the work, and both come straight from the specification:
   near-miss rather than a pass.
 - **Timestamps are not revisions.** [§2](SPEC.md#2-terminology) rules out wall-clock time,
   so an ISO-8601 value is rejected even under a name like `version`.
+
+**Can this ever test R2 and R3?** Not from outside, and [§9](SPEC.md#9-proposal-a-declared-surface-non-normative)
+explains why: an observer can neither enumerate a system's derived consumers nor induce
+disagreement between them. A black-box test can therefore falsify conformance but never
+confirm it. That section proposes an optional declared surface that would make R2 and R3
+checkable by someone who did not write the system.
 
 When nothing qualifies it prints the near-misses and why each was rejected, because
 "no" is only useful if you can see what it nearly matched.
